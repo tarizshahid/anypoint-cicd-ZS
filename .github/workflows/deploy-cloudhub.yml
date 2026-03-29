@@ -1,0 +1,84 @@
+name: Build and Deploy to CloudHub 2.0
+
+# Trigger the pipeline on pushes to develop and main
+on:
+  push:
+    branches: [ "develop", "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'adopt'
+          cache: maven
+
+      # === BUILD PHASE ===
+      - name: Build Mule Application with Maven
+        run: mvn clean package -DskipTests
+
+      - name: Set up Node.js for CLI
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Anypoint CLI v4
+        run: npm install -g anypoint-cli-v4
+
+      # === ENVIRONMENT LOGIC PHASE ===
+      - name: Determine Environment Properties File
+        id: set-env
+        run: |
+          if [[ "${{ github.ref_name }}" == "develop" ]]; then
+            echo "Branch is develop. Using Sandbox configuration."
+            echo "PROP_FILE=src/main/resources/sandbox.properties" >> $GITHUB_ENV
+          elif [[ "${{ github.ref_name }}" == "main" ]]; then
+            echo "Branch is main. Using Design configuration."
+            echo "PROP_FILE=src/main/resources/design.properties" >> $GITHUB_ENV
+          else
+            echo "Error: Branch not supported for deployment."
+            exit 1
+          fi
+
+      # === PUBLISH & DEPLOY PHASE ===
+      - name: Publish to Exchange and Deploy to CloudHub 2.0
+        run: |
+          echo "=== Extracting Configuration from $PROP_FILE ==="
+          
+          # 1. Export credentials so the CLI automatically picks them up
+          # (Using tr -d '\r' prevents hidden Windows line-break errors on Linux runners)
+          export ANYPOINT_CLIENT_ID=$(grep CLIENT_ID $PROP_FILE | cut -d'=' -f2 | tr -d '\r')
+          export ANYPOINT_CLIENT_SECRET=$(grep CLIENT_SECRET $PROP_FILE | cut -d'=' -f2 | tr -d '\r')
+          
+          # 2. Extract deployment variables
+          ORG_ID=$(grep ORG_ID $PROP_FILE | cut -d'=' -f2 | tr -d '\r')
+          ENV_NAME=$(grep ENV_NAME $PROP_FILE | cut -d'=' -f2 | tr -d '\r')
+          TARGET_ID=$(grep TARGET_ID $PROP_FILE | cut -d'=' -f2 | tr -d '\r')
+          APP_NAME=$(grep APP_NAME $PROP_FILE | cut -d'=' -f2 | tr -d '\r')
+          RUNTIME=$(grep RUNTIME_VERSION $PROP_FILE | cut -d'=' -f2 | tr -d '\r')
+          ASSET_ID=$(grep ASSET_ID $PROP_FILE | cut -d'=' -f2 | tr -d '\r')
+          ASSET_VERSION=$(grep ASSET_VERSION $PROP_FILE | cut -d'=' -f2 | tr -d '\r')
+
+          # 3. Find the built .jar file
+          JAR_FILE=$(find target -maxdepth 1 -name "*.jar" | head -n 1)
+          echo "Found JAR: $JAR_FILE"
+          
+          echo "=== Step 1: Uploading to Anypoint Exchange ==="
+          anypoint-cli-v4 exchange:asset:upload $ORG_ID/$ASSET_ID/$ASSET_VERSION \
+            --files="{\"mule-application.jar\": \"$JAR_FILE\"}" \
+            --type="app" \
+            --name="$ASSET_ID"
+
+          echo "=== Step 2: Deploying to CloudHub 2.0 ($ENV_NAME) ==="
+          anypoint-cli-v4 runtime-mgr:application:deploy $APP_NAME $TARGET_ID $RUNTIME $ASSET_ID \
+            --assetVersion $ASSET_VERSION \
+            --groupId $ORG_ID \
+            --environment $ENV_NAME
