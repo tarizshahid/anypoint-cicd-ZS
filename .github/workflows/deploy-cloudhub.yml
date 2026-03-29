@@ -77,8 +77,26 @@ jobs:
             --type="app" \
             --name="$ASSET_ID"
 
-          echo "=== Step 2: Deploying to CloudHub 2.0 ($ENV_NAME) ==="
-          anypoint-cli-v4 runtime-mgr:application:deploy $APP_NAME $TARGET_ID $RUNTIME $ASSET_ID \
-            --assetVersion $ASSET_VERSION \
-            --groupId $ORG_ID \
-            --environment $ENV_NAME
+          echo "=== Step 2: Deploying or Updating CloudHub 2.0 Application ($ENV_NAME) ==="
+          
+          # Check if the application already exists and extract its internal UUID.
+          # We use 2>/dev/null to hide the CLI error if the app doesn't exist, preventing a pipeline crash.
+          APP_ID=$(anypoint-cli-v4 runtime-mgr:application:describe $APP_NAME --environment $ENV_NAME -o json 2>/dev/null | jq -r '.id' || true)
+
+          # If the APP_ID is empty or says "null", it means the app is completely new.
+          if [[ -z "$APP_ID" || "$APP_ID" == "null" ]]; then
+            echo "Application '$APP_NAME' does not exist yet. Creating a new deployment..."
+            anypoint-cli-v4 runtime-mgr:application:deploy $APP_NAME $TARGET_ID $RUNTIME $ASSET_ID \
+              --assetVersion $ASSET_VERSION \
+              --groupId $ORG_ID \
+              --environment $ENV_NAME
+          
+          # If the APP_ID exists, we use the 'modify' command to update the existing code.
+          else
+            echo "Application '$APP_NAME' already exists (UUID: $APP_ID). Updating the deployment..."
+            anypoint-cli-v4 runtime-mgr:application:modify $APP_ID \
+              --artifactId $ASSET_ID \
+              --assetVersion $ASSET_VERSION \
+              --groupId $ORG_ID \
+              --environment $ENV_NAME
+          fi
